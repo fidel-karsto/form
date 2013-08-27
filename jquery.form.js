@@ -1,15 +1,14 @@
 /*!
  * jQuery Form Plugin
- * version: 3.28.0-2013.02.06
+ * version: 3.40.0-2013.08.13
  * @requires jQuery v1.5 or later
- *
+ * Copyright (c) 2013 M. Alsup
  * Examples and documentation at: http://malsup.com/jquery/form/
  * Project repository: https://github.com/malsup/form
- * Dual licensed under the MIT and GPL licenses:
- *    http://malsup.github.com/mit-license.txt
- *    http://malsup.github.com/gpl-license-v2.txt
+ * Dual licensed under the MIT and GPL licenses.
+ * https://github.com/malsup/form#copyright-and-license
  */
-/*global ActiveXObject alert */
+/*global ActiveXObject */
 ;(function($) {
 "use strict";
 
@@ -57,6 +56,21 @@ var feature = {};
 feature.fileapi = typeof($("<input type='file'/>").get(0).files) !== "undefined";
 feature.formdata = typeof(window.FormData) !== "undefined";
 
+var hasProp = !!$.fn.prop;
+
+// attr2 uses prop when it can but checks the return type for
+// an expected string.  this accounts for the case where a form 
+// contains inputs with names like "action" or "method"; in those
+// cases "prop" returns the element
+$.fn.attr2 = function() {
+    if ( ! hasProp )
+        return this.attr.apply(this, arguments);
+    var val = this.prop.apply(this, arguments);
+    if ( ( val && val.jquery ) || typeof val === 'string' )
+        return val;
+    return this.attr.apply(this, arguments);
+};
+
 /**
  * ajaxSubmit() provides a mechanism for immediately submitting
  * an HTML form using AJAX.
@@ -75,9 +89,13 @@ $.fn.ajaxSubmit = function (options) {
     if (typeof options === 'function') {
         options = { success: options };
     }
+    else if ( options === undefined ) {
+        options = {};
+    }
 
-    method = this.attr('method');
-    action = this.attr('action');
+    method = options.type || this.attr2('method');
+    action = options.url  || this.attr2('action');
+
     url = (typeof action === 'string') ? $.trim(action) : '';
     url = url || window.location.href || '';
     if (url) {
@@ -88,7 +106,7 @@ $.fn.ajaxSubmit = function (options) {
     options = $.extend(true, {
         url:  url,
         success: $.ajaxSettings.success,
-        type: method || 'GET',
+        type: method || $.ajaxSettings.type,
         iframeSrc: /^https/i.test(window.location.href || '') ? 'javascript:false' : 'about:blank'
     }, options);
 
@@ -171,11 +189,27 @@ $.fn.ajaxSubmit = function (options) {
         }
     };
 
+    if (options.error) {
+        var oldError = options.error;
+        options.error = function(xhr, status, error) {
+            var context = options.context || this;
+            oldError.apply(context, [xhr, status, error, $form]);
+        };
+    }
+
+     if (options.complete) {
+        var oldComplete = options.complete;
+        options.complete = function(xhr, status) {
+            var context = options.context || this;
+            oldComplete.apply(context, [xhr, status, $form]);
+        };
+    }
+
     // are there files to upload?
 
     // [value] (issue #113), also see comment:
     // https://github.com/malsup/form/commit/588306aedba1de01388032d5f42a60159eea9228#commitcomment-2180219
-    var fileInputs = $('input[type=file]:enabled[value!=""]', this);
+    var fileInputs = $('input[type=file]:enabled:not([value=""])', this);
 
     var hasFileInputs = fileInputs.length > 0;
     var mp = 'multipart/form-data';
@@ -220,7 +254,7 @@ $.fn.ajaxSubmit = function (options) {
 
     // utility fn for deep serialization
     function deepSerialize(extraData){
-        var serialized = $.param(extraData).split('&');
+        var serialized = $.param(extraData, options.traditional).split('&');
         var len = serialized.length;
         var result = [];
         var i, part;
@@ -261,7 +295,7 @@ $.fn.ajaxSubmit = function (options) {
         if (options.uploadProgress) {
             // workaround because jqXHR does not expose upload property
             s.xhr = function() {
-                var xhr = jQuery.ajaxSettings.xhr();
+                var xhr = $.ajaxSettings.xhr();
                 if (xhr.upload) {
                     xhr.upload.addEventListener('progress', function(event) {
                         var percent = 0;
@@ -290,14 +324,18 @@ $.fn.ajaxSubmit = function (options) {
     // private function for handling file uploads (hat tip to YAHOO!)
     function fileUploadIframe(a) {
         var form = $form[0], el, i, s, g, id, $io, io, xhr, sub, n, timedOut, timeoutHandle;
-        var useProp = !!$.fn.prop;
         var deferred = $.Deferred();
+
+        // #341
+        deferred.abort = function(status) {
+            xhr.abort(status);
+        };
 
         if (a) {
             // ensure that every serialized input is still enabled
             for (i=0; i < elements.length; i++) {
                 el = $(elements[i]);
-                if ( useProp )
+                if ( hasProp )
                     el.prop('disabled', false);
                 else
                     el.removeAttr('disabled');
@@ -309,9 +347,9 @@ $.fn.ajaxSubmit = function (options) {
         id = 'jqFormIO' + (new Date().getTime());
         if (s.iframeTarget) {
             $io = $(s.iframeTarget);
-            n = $io.attr('name');
+            n = $io.attr2('name');
             if (!n)
-                 $io.attr('name', id);
+                 $io.attr2('name', id);
             else
                 id = n;
         }
@@ -391,9 +429,38 @@ $.fn.ajaxSubmit = function (options) {
 
         var CLIENT_TIMEOUT_ABORT = 1;
         var SERVER_ABORT = 2;
-
+                
         function getDoc(frame) {
-            var doc = frame.contentWindow ? frame.contentWindow.document : frame.contentDocument ? frame.contentDocument : frame.document;
+            /* it looks like contentWindow or contentDocument do not
+             * carry the protocol property in ie8, when running under ssl
+             * frame.document is the only valid response document, since
+             * the protocol is know but not on the other two objects. strange?
+             * "Same origin policy" http://en.wikipedia.org/wiki/Same_origin_policy
+             */
+            
+            var doc = null;
+            
+            // IE8 cascading access check
+            try {
+                if (frame.contentWindow) {
+                    doc = frame.contentWindow.document;
+                }
+            } catch(err) {
+                // IE8 access denied under ssl & missing protocol
+                log('cannot get iframe.contentWindow document: ' + err);
+            }
+
+            if (doc) { // successful getting content
+                return doc;
+            }
+
+            try { // simply checking may throw in ie8 under ssl or mismatched protocol
+                doc = frame.contentDocument ? frame.contentDocument : frame.document;
+            } catch(err) {
+                // last attempt
+                log('cannot get iframe.contentDocument: ' + err);
+                doc = frame.document;
+            }
             return doc;
         }
 
@@ -408,7 +475,7 @@ $.fn.ajaxSubmit = function (options) {
         // take a breath so that pending repaints get some cpu time before the upload starts
         function doSubmit() {
             // make sure form attrs are set
-            var t = $form.attr('target'), a = $form.attr('action');
+            var t = $form.attr2('target'), a = $form.attr2('action');
 
             // update form attrs in IE friendly way
             form.setAttribute('target',id);
@@ -512,11 +579,10 @@ $.fn.ajaxSubmit = function (options) {
             if (xhr.aborted || callbackProcessed) {
                 return;
             }
-            try {
-                doc = getDoc(io);
-            }
-            catch(ex) {
-                log('cannot access response document: ', ex);
+            
+            doc = getDoc(io);
+            if(!doc) {
+                log('cannot access response document');
                 e = SERVER_ABORT;
             }
             if (e === CLIENT_TIMEOUT_ABORT && xhr) {
@@ -569,7 +635,7 @@ $.fn.ajaxSubmit = function (options) {
                     s.dataType = 'xml';
                 xhr.getResponseHeader = function(header){
                     var headers = {'content-type': s.dataType};
-                    return headers[header];
+                    return headers[header.toLowerCase()];
                 };
                 // support for XHR 'status' & 'statusText' emulation :
                 if (docRoot) {
@@ -832,13 +898,13 @@ $.fn.formToArray = function(semantic, elements) {
     for(i=0, max=els.length; i < max; i++) {
         el = els[i];
         n = el.name;
-        if (!n) {
+        if (!n || el.disabled) {
             continue;
         }
 
         if (semantic && form.clk && el.type == "image") {
             // handle image inputs on the fly when semantic == true
-            if(!el.disabled && form.clk == el) {
+            if(form.clk == el) {
                 a.push({name: n, value: $(el).val(), type: el.type });
                 a.push({name: n+'.x', value: form.clk_x}, {name: n+'.y', value: form.clk_y});
             }
@@ -853,7 +919,7 @@ $.fn.formToArray = function(semantic, elements) {
                 a.push({name: n, value: v[j]});
             }
         }
-        else if (feature.fileapi && el.type == 'file' && !el.disabled) {
+        else if (feature.fileapi && el.type == 'file') {
             if (elements)
                 elements.push(el);
             var files = el.files;
@@ -1047,7 +1113,7 @@ $.fn.clearFields = $.fn.clearInputs = function(includeHidden) {
         }
 		else if (t == "file") {
 			if (/MSIE/.test(navigator.userAgent)) {
-				$(this).replaceWith($(this).clone());
+				$(this).replaceWith($(this).clone(true));
 			} else {
 				$(this).val('');
 			}
@@ -1129,4 +1195,4 @@ function log() {
     }
 }
 
-})(jQuery);
+})( (typeof(jQuery) != 'undefined') ? jQuery : window.Zepto );
