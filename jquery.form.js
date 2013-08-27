@@ -54,25 +54,25 @@
  * Feature detection
  */
 var feature = {};
-feature.fileapi = $("<input type='file'/>").get(0).files !== undefined;
-feature.formdata = window.FormData !== undefined;
+feature.fileapi = typeof($("<input type='file'/>").get(0).files) !== "undefined";
+feature.formdata = typeof(window.FormData) !== "undefined";
 
 /**
  * ajaxSubmit() provides a mechanism for immediately submitting
  * an HTML form using AJAX.
  */
-$.fn.ajaxSubmit = function(options) {
+$.fn.ajaxSubmit = function (options) {
     /*jshint scripturl:true */
 
     // fast fail if nothing selected (http://dev.jquery.com/ticket/2752)
-    if (!this.length) {
+    if (this.length === 0) {
         log('ajaxSubmit: skipping submit process - no element selected');
         return this;
     }
 
     var method, action, url, $form = this;
 
-    if (typeof options == 'function') {
+    if (typeof options === 'function') {
         options = { success: options };
     }
 
@@ -108,7 +108,7 @@ $.fn.ajaxSubmit = function(options) {
     }
 
     var traditional = options.traditional;
-    if ( traditional === undefined ) {
+    if ( typeof(traditional) === "undefined" ) {
         traditional = $.ajaxSettings.traditional;
     }
 
